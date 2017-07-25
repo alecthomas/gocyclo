@@ -8,10 +8,11 @@
 // Usage:
 //      gocyclo [<flag> ...] <Go file or directory> ...
 //
-// Flags
+// Flags:
 //      -over N   show functions with complexity > N only and
 //                return exit code 1 if the output is non-empty
 //      -top N    show the top N most complex functions only
+//		-max-depth     show the maximum depth of functions
 //      -avg      show the average complexity
 //
 // The output fields for each line are:
@@ -28,18 +29,20 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 )
 
 const usageDoc = `Calculate cyclomatic complexities of Go functions.
-usage:
-        gocyclo [<flag> ...] <Go file or directory> ...
+Usage:
+        gocyclo [flags] <Go file or directory> ...
 
-Flags
-        -over N   show functions with complexity > N only and
-                  return exit code 1 if the set is non-empty
-        -top N    show the top N most complex functions only
-        -avg      show the average complexity over all functions,
-                  not depending on whether -over or -top are set
+Flags:
+        -over N        show functions with complexity > N only and
+                       return exit code 1 if the set is non-empty
+        -top N         show the top N most complex functions only
+        -max-depth     show the maximum depth of functions
+        -avg           show the average complexity over all functions,
+                       not depending on whether -over or -top are set
 
 The output fields for each line are:
 <complexity> <package> <function> <file:row:column>
@@ -51,9 +54,10 @@ func usage() {
 }
 
 var (
-	over = flag.Int("over", 0, "show functions with complexity > N only")
-	top  = flag.Int("top", -1, "show the top N most complex functions only")
-	avg  = flag.Bool("avg", false, "show the average complexity")
+	over     = flag.Int("over", 0, "show functions with complexity > N only")
+	top      = flag.Int("top", -1, "show the top N most complex functions only")
+	avg      = flag.Bool("avg", false, "show the average complexity")
+	maxDepth = flag.Bool("max-depth", false, "show functions with nested braces")
 )
 
 func main() {
@@ -78,7 +82,7 @@ func main() {
 }
 
 func analyze(paths []string) []stat {
-	stats := make([]stat, 0)
+	stats := []stat{}
 	for _, path := range paths {
 		if isDir(path) {
 			stats = analyzeDir(path, stats)
@@ -104,6 +108,12 @@ func analyzeFile(fname string, stats []stat) []stat {
 }
 
 func analyzeDir(dirname string, stats []stat) []stat {
+	filepath.Walk(dirname, func(path string, info os.FileInfo, err error) error {
+		if err == nil && !info.IsDir() && strings.HasSuffix(path, ".go") {
+			stats = analyzeFile(path, stats)
+		}
+		return err
+	})
 	files, _ := filepath.Glob(filepath.Join(dirname, "*.go"))
 	for _, file := range files {
 		stats = analyzeFile(file, stats)
@@ -124,6 +134,7 @@ func writeStats(w io.Writer, sortedStats []stat) int {
 		if stat.Complexity <= *over {
 			return i
 		}
+
 		fmt.Fprintln(w, stat)
 	}
 	return len(sortedStats)
@@ -196,11 +207,39 @@ func recvString(recv ast.Expr) string {
 	return "BADRECV"
 }
 
+func max(s []int) (m int) {
+	for _, value := range s {
+		if value > m {
+			m = value
+		}
+	}
+	return
+}
+
 // complexity calculates the cyclomatic complexity of a function.
 func complexity(fn *ast.FuncDecl) int {
+	if *maxDepth {
+		complexity := []int{}
+		for _, lvl := range fn.Body.List {
+			v := nestedComplexityVisitor{}
+			ast.Walk(&v, lvl)
+			complexity = append(complexity, max(v.NodeComplexity))
+		}
+		return max(complexity)
+	}
+
 	v := complexityVisitor{}
 	ast.Walk(&v, fn)
 	return v.Complexity
+}
+
+type nestedComplexityVisitor struct {
+	// Complexity is the "nested" complexity
+	// e.g the max depth of nested braces inside a function
+	Complexity     int
+	NodeComplexity []int
+	Lbrace         token.Pos
+	Rbrace         token.Pos
 }
 
 type complexityVisitor struct {
@@ -209,8 +248,8 @@ type complexityVisitor struct {
 }
 
 // Visit implements the ast.Visitor interface.
-func (v *complexityVisitor) Visit(n ast.Node) ast.Visitor {
-	switch n := n.(type) {
+func (v *complexityVisitor) Visit(node ast.Node) ast.Visitor {
+	switch n := node.(type) {
 	case *ast.FuncDecl, *ast.IfStmt, *ast.ForStmt, *ast.RangeStmt, *ast.CaseClause, *ast.CommClause:
 		v.Complexity++
 	case *ast.BinaryExpr:
@@ -218,5 +257,28 @@ func (v *complexityVisitor) Visit(n ast.Node) ast.Visitor {
 			v.Complexity++
 		}
 	}
+
+	return v
+}
+
+// Visit implements the ast.Visitor interface.
+func (v *nestedComplexityVisitor) Visit(node ast.Node) ast.Visitor {
+	switch n := node.(type) {
+	case *ast.BlockStmt:
+		if v.Rbrace == 0 && v.Lbrace == 0 {
+			v.Lbrace = n.Lbrace
+			v.Rbrace = n.Rbrace
+		}
+
+		if n.Lbrace > v.Lbrace && n.Rbrace > v.Rbrace {
+			v.Complexity--
+		}
+
+		v.Lbrace = n.Lbrace
+		v.Rbrace = n.Rbrace
+		v.Complexity++
+		v.NodeComplexity = append(v.NodeComplexity, v.Complexity)
+	}
+
 	return v
 }

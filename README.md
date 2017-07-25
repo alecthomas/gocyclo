@@ -8,7 +8,7 @@ following rules:
 
 To install, run
 
-    $ go get github.com/fzipp/gocyclo
+    $ go get github.com/arthurgustin/gocyclo
 
 and put the resulting binary in one of your PATH directories if
 `$GOPATH/bin` isn't already in your PATH.
@@ -24,6 +24,8 @@ Examples:
     $ gocyclo -top 10 src/
     $ gocyclo -over 25 docker
     $ gocyclo -avg .
+    $ gocyclo -max-depth .
+    $ gocyclo -max-depth -over 3 .
 
 The output fields for each line are:
 
